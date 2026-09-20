@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Scan QR Absensi Siswa</title>
+  <style>
+    *{box-sizing:border-box}
+    body{margin:0;background:#07111f;color:#fff;font-family:Arial,sans-serif;min-height:100vh;display:flex;flex-direction:column}
+    header{padding:14px 16px;background:#0f1d31}
+    h1{font-size:18px;margin:0 0 4px}
+    p{margin:0;color:#b9c7d8;font-size:13px}
+    main{width:100%;max-width:720px;margin:0 auto;padding:16px}
+    .camera-card{position:relative;background:#020817;border-radius:18px;overflow:hidden;min-height:360px;display:flex;align-items:center;justify-content:center;border:1px solid #1e293b}
+    video{width:100%;height:auto;max-height:72vh;display:block;object-fit:cover;background:#000}
+    .scan-box{position:absolute;left:50%;top:50%;width:min(68vw,300px);height:min(68vw,300px);transform:translate(-50%,-50%);border:3px solid #22c55e;border-radius:18px;box-shadow:0 0 0 9999px rgba(0,0,0,.28);pointer-events:none}
+    #status{margin-top:14px;padding:12px 14px;border-radius:12px;background:#17263b;color:#dbeafe;font-size:14px;line-height:1.45;white-space:pre-line}
+    #status.ok{background:#064e3b;color:#d1fae5}
+    #status.err{background:#7f1d1d;color:#fee2e2}
+    #status.warn{background:#713f12;color:#fef3c7}
+    .actions{display:flex;gap:10px;justify-content:center;margin-top:14px}
+    button{border:0;border-radius:10px;padding:11px 18px;background:#10b981;color:#fff;font-weight:800;font-size:14px;cursor:pointer}
+    button.secondary{background:#334155}
+    .foot{margin-top:14px;color:#94a3b8;font-size:12px;text-align:center}
+    #reader{position:absolute;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none}
+  </style>
+</head>
+<body>
+  <header><h1>📷 Scan QR Absensi Siswa</h1><p>Arahkan QR pada kartu ujian ke kotak hijau.</p></header>
+  <main>
+    <div class="camera-card">
+      <video id="video" autoplay playsinline muted></video>
+      <div class="scan-box"></div>
+      <div id="reader"></div>
+    </div>
+    <div id="status">Meminta izin kamera...</div>
+    <div class="actions"><button id="closeBtn" class="secondary" type="button">Tutup Kamera</button></div>
+    <div class="foot">Kamera belakang HP diprioritaskan. Izinkan kamera ketika Chrome menampilkannya.</div>
+  </main>
+
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script>
+(function(){
+  'use strict';
+  const params=new URLSearchParams(location.search);
+  const targetOrigin=params.get('targetOrigin')||'*';
+  const statusEl=document.getElementById('status');
+  let scanner=null,running=false,lastText='',lastAt=0,permissionStream=null;
+  function status(text,kind){statusEl.textContent=text;statusEl.className=kind||'';}
+  function send(text){
+    try{
+      if(window.opener&&!window.opener.closed){
+        window.opener.postMessage({source:'school-attendance-camera',text:String(text||'')},targetOrigin);
+      }
+    }catch(e){}
+  }
+  function onDecoded(decodedText){
+    const now=Date.now();
+    if(!decodedText)return;
+    if(decodedText===lastText&&now-lastAt<1800)return;
+    lastText=decodedText;lastAt=now;
+    send(decodedText);
+    status('✓ QR terbaca. Data dikirim ke halaman absensi...','ok');
+  }
+  async function requestPermissionFirst(){
+    if(!window.isSecureContext)throw new Error('Halaman kamera harus dibuka melalui HTTPS.');
+    if(!navigator.mediaDevices||typeof navigator.mediaDevices.getUserMedia!=='function'){
+      throw new Error('Browser tidak mendukung akses kamera. Gunakan Chrome atau Edge terbaru.');
+    }
+    status('Meminta izin kamera...','');
+    try{
+      permissionStream=await navigator.mediaDevices.getUserMedia({
+        audio:false,
+        video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}}
+      });
+      permissionStream.getTracks().forEach(t=>t.stop());
+      permissionStream=null;
+    }catch(e){
+      try{if(permissionStream)permissionStream.getTracks().forEach(t=>t.stop());}catch(_e){}
+      permissionStream=null;
+      throw e;
+    }
+  }
+  async function startScanner(){
+    scanner=new Html5Qrcode('reader',{verbose:false});
+    let camera={facingMode:{ideal:'environment'}};
+    try{
+      const cams=await Html5Qrcode.getCameras();
+      if(Array.isArray(cams)&&cams.length){
+        const rear=cams.find(c=>/back|rear|environment|belakang/i.test(String(c.label||'')));
+        camera=(rear||cams[0]).id;
+      }
+    }catch(e){}
+    try{
+      await scanner.start(camera,{fps:12,qrbox:function(w,h){
+        const size=Math.min(320,Math.floor(Math.min(w,h)*.72));
+        return {width:Math.max(190,size),height:Math.max(190,size)};
+      },aspectRatio:1,disableFlip:false},onDecoded,function(){});
+    }catch(firstError){
+      try{
+        await scanner.clear();
+      }catch(_e){}
+      scanner=new Html5Qrcode('reader',{verbose:false});
+      await scanner.start({facingMode:{ideal:'environment'}},{fps:12,qrbox:function(w,h){
+        const size=Math.min(320,Math.floor(Math.min(w,h)*.72));
+        return {width:Math.max(190,size),height:Math.max(190,size)};
+      },aspectRatio:1,disableFlip:false},onDecoded,function(){});
+    }
+    running=true;
+    status('Kamera aktif. Arahkan QR kartu siswa ke kotak hijau.','ok');
+  }
+  async function start(){
+    try{
+      await requestPermissionFirst();
+      await startScanner();
+    }catch(e){
+      running=false;
+      const name=e&&e.name?String(e.name):'';
+      let msg=e&&e.message?String(e.message):String(e);
+      if(name==='NotAllowedError'||/permission|not allowed|denied/i.test(msg)){
+        msg='Akses kamera ditolak. Pada Chrome tekan ikon 🔒/kamera di kiri alamat situs, pilih Izinkan kamera, lalu muat ulang halaman ini.';
+      }else if(name==='NotFoundError'){
+        msg='Kamera tidak ditemukan pada perangkat ini.';
+      }else if(name==='NotReadableError'||/could not start|not readable|in use/i.test(msg)){
+        msg='Kamera sedang digunakan aplikasi/tab lain. Tutup aplikasi kamera lain lalu coba lagi.';
+      }
+      status('Kamera tidak dapat dijalankan: '+msg,'err');
+    }
+  }
+  async function stop(){
+    try{if(permissionStream)permissionStream.getTracks().forEach(t=>t.stop());}catch(e){}
+    permissionStream=null;
+    try{if(scanner&&running)await scanner.stop();}catch(e){}
+    try{if(scanner)await scanner.clear();}catch(e){}
+    running=false;scanner=null;
+  }
+  document.getElementById('closeBtn').addEventListener('click',async function(){await stop();try{window.close();}catch(e){}});
+  window.addEventListener('pagehide',function(){stop();});
+  start();
+})();
+</script>
+</body>
+</html>
